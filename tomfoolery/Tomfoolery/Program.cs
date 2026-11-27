@@ -15,6 +15,7 @@ class Program
         for (int i = 0; i < read; i++)
         {
             Console.Write((char)buffer[i]);
+            alphaStream.OnAlphaCharacterEncountered += (char c) => Console.WriteLine($"{c}");
         }*/
         IFileSystem fileSystem = new RealFileSystem();
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
