@@ -1,0 +1,138 @@
+<!doctype html><html lang="pl"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Pliki, strumienie i zdarzenia w C#</title><style>*{box-sizing:border-box}body{max-width:850px;margin:auto;padding:24px;color:#20313b;background:#faf9f5;font:17px/1.6 system-ui}h1,h2{font-family:Georgia,serif;line-height:1.2}nav{display:flex;flex-wrap:wrap;gap:6px}a,summary{color:#075c62}nav a{background:#e6efeb;padding:3px 8px}section{border-top:1px solid #becbc9;margin:26px 0}pre{background:#172731;color:#e6f4ef;padding:16px;overflow:auto;border-radius:6px;font-size:14px}summary{cursor:pointer;font-weight:650}footer{margin-top:32px}</style><h1>Pliki, strumienie i zdarzenia w C#</h1><p><b>Co to jest Testably?</b> Wyobraź sobie test, który potrzebuje katalogu z jednym pustym plikiem. Test tworzy <code>MockFileSystem</code> i dodaje do niego plik w pamięci. Badana metoda dostaje ten sam system plików. Dzięki temu dokładnie wiesz, co powinna znaleźć, niezależnie od zawartości laptopa.</p><p><b>Trzy różne obiekty.</b> System plików odpowiada na pytanie „gdzie jest plik?”. Strumień pozwala czytać lub zapisywać kolejne bajty. Zdarzenie pozwala obiektowi powiadomić zainteresowane metody, że coś zaszło.</p><nav><a href="#s0">Dysk w pamięci</a><a href="#s1">Metoda do przetestowania</a><a href="#s2">Bufor i częściowy odczyt</a><a href="#s3">Dekorator odczytu</a><a href="#s4">Własne zdarzenie</a><a href="#s5">Zdarzenie z danymi</a><a href="#s6">Ścieżki i metadane</a><a href="#s7">Filtry katalogu</a><a href="#s8">Test odbiorcy</a><a href="#zmiany">Nowy eksport</a><a href="#postep">Postęp odczytu</a></nav><section id="s0"><h2>1. Dysk w pamięci</h2><b>Jak przeczytać pierwszy wiersz notatki?</b><p>Test tworzy własny mały dysk. Zmienna fs wskazuje ten dysk. Ścieżka jest tylko napisem. O tym, gdzie szukasz pliku, decyduje obiekt, na którym wywołasz OpenRead. W projekcie konsolowym do tego przykładu dodaj pakiet Testably.Abstractions.Testing i using Testably.Abstractions.Testing;. Pozostałe przykłady korzystają ze standardowych przestrzeni System, System.IO, System.Linq i System.Collections.Generic.</p><details><summary>Pokaż kod i prześledź wynik</summary><pre><code>var fs = new MockFileSystem();
+string path = fs.Path.Combine(fs.Directory.GetCurrentDirectory(), "plan.txt");
+fs.File.WriteAllText(path, "Intro\nSolo");
+
+using var stream = fs.File.OpenRead(path);
+using var reader = new StreamReader(stream);
+Console.WriteLine(reader.ReadLine());</code></pre><p>Intro. OpenRead otwiera bajty, a StreamReader zamienia je w tekst. Drugie ReadLine() da Solo, trzecie zwróci null. Jeśli zadanie już przekazuje fs do metody, użyj tego obiektu. Nowy MockFileSystem miałby własne pliki.</p></details></section><section id="s1"><h2>2. Metoda do przetestowania</h2><b>Jak policzyć bajty zarówno na dysku, jak i w pamięci?</b><p>Podziel pracę w miejscu, gdzie otwierasz plik. Kod poniżej dostaje już otwarty strumień. Możesz podać fs.File.OpenRead(path) lub zbudować mały przykład bez pliku.</p><details><summary>Pokaż kod i prześledź wynik</summary><pre><code>static int CountZeros(Stream input)
+{
+    int zeros = 0;
+    int value;
+    while ((value = input.ReadByte()) != -1)
+        if (value == 0) zeros++;
+    return zeros;
+}
+
+using var sample = new MemoryStream(new byte[] { 0, 8, 0 });
+Console.WriteLine(CountZeros(sample));</code></pre><p>2. ReadByte zwraca int, dzięki czemu -1 oznacza koniec, a 0 jest poprawną daną. Ponowne wywołanie na tym samym strumieniu da 0, bo kursor jest już na końcu. Strumień zamyka kod, który go utworzył.</p></details></section><section id="s2"><h2>3. Bufor i częściowy odczyt</h2><b>Skopiuj pięć bajtów buforem o długości trzy.</b><p>Read zwraca liczbę bajtów rzeczywiście wpisanych do tablicy. Przy ostatnim przejściu część bufora może nadal zawierać dane z poprzedniego obrotu.</p><details><summary>Pokaż kod i prześledź wynik</summary><pre><code>using var src = new MemoryStream(new byte[] { 1, 2, 3, 4, 5 });
+using var dst = new MemoryStream();
+byte[] buffer = new byte[3];
+int n;
+while ((n = src.Read(buffer, 0, buffer.Length)) &gt; 0)
+    dst.Write(buffer, 0, n);
+Console.WriteLine(string.Join(",", dst.ToArray()));</code></pre><p>1,2,3,4,5. Pierwszy odczyt daje 3, drugi daje 2. Write z buffer.Length dopisałby stare 3. Gdy niczego nie zmieniasz po drodze, całą pętlę zastępuje src.CopyTo(dst). Żeby potem czytać z dst, ustaw dst.Position = 0.</p></details></section><section id="s3"><h2>4. Dekorator odczytu</h2><b>Jak policzyć przeczytane bajty bez zmieniania kodu, który czyta?</b><p>Dekorator sam jest strumieniem i przechowuje drugi strumień w polu inner. Gdy klient woła Read, dekorator przekazuje wywołanie do środka, zapamiętuje wynik i oddaje go klientowi. Oto pełny wariant tylko do odczytu. Strumień wewnętrzny pozostaje własnością wywołującego.</p><details><summary>Pokaż kod i prześledź wynik</summary><pre><code>sealed class ReadMeter : Stream
+{
+    private readonly Stream inner;
+    public long Total { get; private set; }
+    public ReadMeter(Stream inner) =&gt; this.inner = inner;
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        int n = inner.Read(buffer, offset, count);
+        Total += n;
+        return n;
+    }
+
+    public override bool CanRead =&gt; inner.CanRead;
+    public override bool CanWrite =&gt; false;
+    public override bool CanSeek =&gt; false;
+    public override void Flush() { }
+    public override long Length =&gt; throw new NotSupportedException();
+    public override long Position
+    {
+        get =&gt; throw new NotSupportedException();
+        set =&gt; throw new NotSupportedException();
+    }
+    public override long Seek(long offset, SeekOrigin origin)
+        =&gt; throw new NotSupportedException();
+    public override void SetLength(long value)
+        =&gt; throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count)
+        =&gt; throw new NotSupportedException();
+}</code></pre><p>Próba: opakuj MemoryStream z bajtami 10, 20. Wywołaj Read(buffer, 1, 4) na buforze pięcioelementowym pełnym zer. Dostaniesz [0,10,20,0,0], wynik 2 i Total równe 2. Offset określa miejsce w tablicy odbiorcy. Jeżeli modyfikujesz dane po odczycie, przejdź po indeksach od offset do offset + n, bez ostatniej granicy.</p></details></section><section id="s4"><h2>5. Własne zdarzenie</h2><b>Jak powiadomić ekran, że zakończyło się nagranie?</b><p>Rejestrator decyduje, kiedy nagranie się skończyło. Ekran decyduje, co wtedy pokazać. Łączysz je operatorem +=. EventArgs.Empty wystarcza, kiedy sama wiadomość o zakończeniu mówi odbiorcy wszystko.</p><details><summary>Pokaż kod i prześledź wynik</summary><pre><code>var recorder = new Recorder();
+recorder.Finished += Display;
+recorder.Stop();
+recorder.Finished -= Display;
+recorder.Stop();
+
+static void Display(object? sender, EventArgs e)
+    =&gt; Console.WriteLine("Zapisano");
+
+sealed class Recorder
+{
+    public event EventHandler? Finished;
+    public void Stop() =&gt; Finished?.Invoke(this, EventArgs.Empty);
+}</code></pre><p>Zapisano pojawi się raz. Pierwszy Stop wywołuje metodę Display. Po -= lista odbiorców jest pusta, a ?. pozwala bezpiecznie pominąć wywołanie. Display bez nawiasów oznacza przekazanie metody do późniejszego użycia.</p></details></section><section id="s5"><h2>6. Zdarzenie z danymi</h2><b>Podaj odbiorcy poziom dźwięku przy przekroczeniu progu.</b><p>Zapisz poprzedni poziom. Dla kolejnych wartości 70, 82, 85 tylko przejście 70 → 82 przekracza próg 80. Dane przekazujesz jako drugi argument Invoke.</p><details><summary>Pokaż kod i prześledź wynik</summary><pre><code>sealed class LevelArgs : EventArgs
+{
+    public int Level { get; }
+    public LevelArgs(int level) =&gt; Level = level;
+}
+
+sealed class Meter
+{
+    private int previous;
+    public event EventHandler&lt;LevelArgs&gt;? Peak;
+
+    public void Update(int level)
+    {
+        bool crossed = previous &lt; 80 &amp;&amp; level &gt;= 80;
+        previous = level;
+        if (crossed) Peak?.Invoke(this, new LevelArgs(level));
+    }
+}</code></pre><p>Podłącz meter.Peak += (_, e) =&gt; Console.WriteLine(e.Level); i wywołaj Update kolejno dla 70, 82, 85, 40, 80. Zobaczysz 82 i 80. Podkreślenie oznacza tu pominięty argument nadawcy. Do późniejszego odpięcia lambdy zachowaj ją w zmiennej typu EventHandler&lt;LevelArgs&gt;.</p></details></section><section id="s6"><h2>7. Ścieżki i metadane</h2><b>Jak wybrać rozszerzenie i rozmiar pliku?</b><p>Zakładając fs i path z pierwszego przykładu, Path rozkłada nazwę na części, File czyta zawartość, a FileInfo daje dostęp do metadanych. Rozmiar mierzysz w bajtach.</p><details><summary>Pokaż kod i prześledź wynik</summary><pre><code>string name = fs.Path.GetFileName(path);
+string ext = fs.Path.GetExtension(path);
+long bytes = fs.FileInfo.New(path).Length;
+bool isText = string.Equals(ext, ".txt",
+                            StringComparison.OrdinalIgnoreCase);
+Console.WriteLine($"{name} {isText}");</code></pre><p>plan.txt True. GetExtension zwraca kropkę razem z rozszerzeniem. Path.Combine(root, "takes", "intro.txt") składa ścieżkę z elementów. Przy kopiowaniu do nowego podkatalogu najpierw utwórz go przez fs.Directory.CreateDirectory.</p></details></section><section id="s7"><h2>8. Filtry katalogu</h2><b>Znajdź w całym drzewie pliki spełniające wszystkie przekazane reguły.</b><p>Rozbij zadanie na dwa pytania. Skąd biorę kandydatów? Których kandydatów zwracam? Func&lt;string, bool&gt; oznacza funkcję, która dostaje ścieżkę i daje odpowiedź tak lub nie.</p><details><summary>Pokaż kod i prześledź wynik</summary><pre><code>static IEnumerable&lt;string&gt; Filter(IEnumerable&lt;string&gt; paths,
+                                  params Func&lt;string, bool&gt;[] rules)
+{
+    foreach (string path in paths)
+        if (rules.All(rule =&gt; rule(path)))
+            yield return path;
+}
+
+var paths = fs.Directory.EnumerateFiles(root, "*",
+                                        SearchOption.AllDirectories);
+var found = Filter(paths,
+    p =&gt; fs.Path.GetExtension(p).Equals(".txt", StringComparison.OrdinalIgnoreCase),
+    p =&gt; fs.FileInfo.New(p).Length &gt; 0);
+foreach (var p in found) Console.WriteLine(p);</code></pre><p>Próba: w root umieść pusty a.txt i b.wav, a w podfolderze niepusty c.TXT. Przejdzie tylko c.TXT. Bez reguł All zwraca true. Any sprawdza, czy przechodzi choć jedna reguła. yield return oddaje jeden wynik i pozwala wznowić pętlę przy następnym kroku foreach.</p></details></section><section id="s8"><h2>9. Test odbiorcy</h2><b>Jak udowodnić, że powiadomienie przyszło dokładnie raz i z dobrymi danymi?</b><p>Użyj Meter z wcześniejszej karty. Zamiast wypisywać na konsolę, odbiorca może zbierać wartości w liście. Na końcu porównasz całą historię z oczekiwaną.</p><details><summary>Pokaż kod i prześledź wynik</summary><pre><code>var meter = new Meter();
+var seen = new List&lt;int&gt;();
+EventHandler&lt;LevelArgs&gt; collect = (_, e) =&gt; seen.Add(e.Level);
+meter.Peak += collect;
+meter.Update(79);
+meter.Update(80);
+meter.Update(95);
+meter.Peak -= collect;
+meter.Update(0);
+meter.Update(99);
+Console.WriteLine(seen.SequenceEqual(new[] { 80 }));</code></pre><p>True. Ten jeden przebieg sprawdza dokładny próg, kolejne wysokie wskazanie i odpięcie odbiorcy. Zmiana &gt;= na &gt; lub pominięcie -= zmieni wynik testu.</p></details></section><section id="zmiany"><h2>10. Nowy eksport w katalogu roboczym</h2><b>Jak odświeżyć listę, gdy edytor dodaje plik?</b><p>EnumerateFiles daje listę podczas przeglądania katalogu. FileSystemWatcher wysyła zdarzenia o późniejszych zmianach. W tej próbie program tworzy własny katalog tymczasowy i sam zapisuje w nim plik.</p><details><summary>Pokaż próbę</summary><pre><code>var folder = Directory.CreateTempSubdirectory();
+try
+{
+    using var watcher = new FileSystemWatcher(folder.FullName, "*.txt");
+    using var arrived = new System.Threading.ManualResetEventSlim();
+    watcher.Created += (_, e) =&gt; {
+        if (e.Name == "take.txt") arrived.Set();
+    };
+    watcher.EnableRaisingEvents = true;
+    File.WriteAllText(Path.Combine(folder.FullName, "take.txt"), "intro");
+    Console.WriteLine(arrived.Wait(TimeSpan.FromSeconds(3)));
+}
+finally
+{
+    folder.Delete(recursive: true);
+}</code></pre><p>Oczekiwany wynik to True. Najpierw podpinamy odbiorcę, potem włączamy obserwację i dopiero tworzymy plik. Wait daje odbiorcy czas na reakcję. Powiadomienie Created oznacza pojawienie się nazwy. Zapis treści może jeszcze trwać.</p><p><b>Wariant.</b> Przy zmianie nazwy podepnij Renamed. Argument zdarzenia udostępnia OldName i Name. Przy modyfikacji zawartości służy Changed. Jeden zapis może wywołać kilka powiadomień.</p></details></section>
+<section id="postep"><h2>11. Postęp odczytu</h2><b>Jak pokazać liczbę przetworzonych bajtów po każdej porcji?</b><p>W klasie ReadMeter z ćwiczenia 4 dodaj zdarzenie, a metodę Read zastąp poniższą wersją. Licznik pamięta sumę od początku. Zdarzenie daje ekranowi okazję, żeby tę sumę odczytać.</p><details><summary>Pokaż zmianę w klasie</summary><pre><code>public event EventHandler? Progress;
+
+public override int Read(byte[] buffer, int offset, int count)
+{
+    int n = inner.Read(buffer, offset, count);
+    Total += n;
+    if (n &gt; 0) Progress?.Invoke(this, EventArgs.Empty);
+    return n;
+}</code></pre><p>Próba z pięcioma bajtami i dwuelementowym buforem:</p><pre><code>using var source = new MemoryStream(new byte[] { 1, 2, 3, 4, 5 });
+using var meter = new ReadMeter(source);
+meter.Progress += (_, _) =&gt; Console.WriteLine(meter.Total);
+byte[] block = new byte[2];
+while (meter.Read(block, 0, block.Length) &gt; 0) { }</code></pre><p>Na ekranie pojawią się kolejno 2, 4 i 5. Ostatnie wywołanie Read zwraca zero. Warunek n &gt; 0 zapobiega ponownemu wypisaniu 5 po dojściu do końca.</p></details></section><footer>Materiały źródłowe · <a href="https://docs.testably.org/">Testably</a> · <a href="https://csharp.mini.pw.edu.pl/pl/labs/06.events-filesystem-streams/">Warsztaty MiNI</a></footer></html>
