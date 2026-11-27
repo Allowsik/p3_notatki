@@ -3,6 +3,7 @@
 public class AlphanumericStream : Stream
 {
     private Stream _stream;
+    public event Action<char> OnAlphaCharacterEncountered;
     
     public AlphanumericStream(Stream stream)
     {
@@ -29,6 +30,7 @@ public class AlphanumericStream : Stream
             {
                 buffer[offset + nextAlpha] = buffer[i];
                 nextAlpha++;
+                OnAlphaCharacterEncountered?.Invoke(c);
             }
         }
         return nextAlpha;
@@ -54,7 +56,19 @@ public class AlphanumericStream : Stream
     
     public override void Write(byte[] buffer, int offset, int count)
     {
-        throw new NotImplementedException();
+        byte[] copy = new byte[count];
+        int nextAlpha = 0;
+        for (int i = offset; i < count + offset; i++)
+        {
+            char c =  (char)buffer[i];
+            if (char.IsLetterOrDigit(c))
+            {
+                copy[nextAlpha] = buffer[i];
+                nextAlpha++;
+                OnAlphaCharacterEncountered?.Invoke(c);
+            }
+        }
+        _stream.Write(copy, 0, nextAlpha);
     }
 
     public override void Flush()
